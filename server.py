@@ -1,30 +1,48 @@
-# server.py
 import asyncio
-import os
-from aiohttp import web
 import json
+from aiohttp import web, WSMsgType
 
-peers = set()
+PORT = 9090
 
-async def websocket_handler(request):
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
+class SignalingServer:
+    def __init__(self):
+        self.app = web.Application()
+        self.app.router.add_get("/ws", self.websocket_handler)
+        self.rooms = {}  # dicionário: room_id -> lista de websockets
 
-    peers.add(ws)
-    try:
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                for peer in peers:
-                    if peer != ws:
-                        await peer.send_str(msg.data)
-    finally:
-        peers.discard(ws)
+    async def websocket_handler(self, request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
 
-    return ws
+        room_id = None
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    if data.get("type") == "join":
+                        room_id = data.get("room")
+                        if not room_id:
+                            continue
+                        if room_id not in self.rooms:
+                            self.rooms[room_id] = []
+                        self.rooms[room_id].append(ws)
+                    elif room_id and room_id in self.rooms:
+                        for peer in self.rooms[room_id]:
+                            if peer != ws:
+                                await peer.send_str(msg.data)
+                elif msg.type == WSMsgType.ERROR:
+                    print(f"Erro na conexão WebSocket: {ws.exception()}")
+        finally:
+            if room_id and ws in self.rooms.get(room_id, []):
+                self.rooms[room_id].remove(ws)
+                if not self.rooms[room_id]:
+                    del self.rooms[room_id]
+            await ws.close()
 
-app = web.Application()
-app.add_routes([web.get('/ws', websocket_handler)])
+        return ws
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
-    web.run_app(app, port=port)
+    def run(self):
+        web.run_app(self.app, port=PORT)
+
+if __name__ == "__main__":
+    SignalingServer().run()
